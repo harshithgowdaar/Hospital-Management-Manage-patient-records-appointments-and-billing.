@@ -1,0 +1,664 @@
+import os
+import json
+import tkinter as tk
+from tkinter import ttk, messagebox
+from datetime import datetime
+
+# ─────────────────────────────────────────────
+#  FILE PATHS
+# ─────────────────────────────────────────────
+PATIENTS_FILE     = "patients.json"
+APPOINTMENTS_FILE = "appointments.json"
+BILLING_FILE      = "billing.json"
+
+# ─────────────────────────────────────────────
+#  PALETTE & FONTS
+# ─────────────────────────────────────────────
+BG        = "#0d1117"
+CARD      = "#161b22"
+CARD2     = "#1c2230"
+ACCENT    = "#00d4aa"
+ACCENT2   = "#0099ff"
+DANGER    = "#ff4d6d"
+TEXT      = "#e6edf3"
+MUTED     = "#8b949e"
+BORDER    = "#30363d"
+SUCCESS   = "#3fb950"
+WARNING   = "#d29922"
+
+FONT_TITLE  = ("Georgia", 22, "bold")
+FONT_HEAD   = ("Georgia", 13, "bold")
+FONT_BODY   = ("Courier", 10)
+FONT_LABEL  = ("Courier", 10, "bold")
+FONT_BTN    = ("Courier", 10, "bold")
+FONT_SMALL  = ("Courier", 9)
+
+# ─────────────────────────────────────────────
+#  DATA HELPERS
+# ─────────────────────────────────────────────
+def load_data(fp):
+    try:
+        if os.path.exists(fp):
+            with open(fp) as f:
+                return json.load(f)
+    except Exception:
+        pass
+    return {}
+
+def save_data(fp, data):
+    with open(fp, "w") as f:
+        json.dump(data, f, indent=4)
+
+def next_pid(patients):
+    return f"P{len(patients)+1:03d}"
+
+# ─────────────────────────────────────────────
+#  REUSABLE WIDGETS
+# ─────────────────────────────────────────────
+def make_card(parent, **kwargs):
+    return tk.Frame(parent, bg=CARD, bd=0, relief="flat", **kwargs)
+
+def styled_label(parent, text, fg=TEXT, font=FONT_BODY, bg=CARD, **kw):
+    return tk.Label(parent, text=text, fg=fg, bg=bg, font=font, **kw)
+
+def styled_entry(parent, width=28, show=None):
+    e = tk.Entry(parent, width=width, bg=CARD2, fg=TEXT, insertbackground=ACCENT,
+                 relief="flat", bd=0, font=FONT_BODY, highlightthickness=1,
+                 highlightcolor=ACCENT, highlightbackground=BORDER, show=show or "")
+    e.configure(disabledbackground=CARD2, disabledforeground=MUTED)
+    return e
+
+def accent_btn(parent, text, cmd, color=ACCENT, width=18):
+    btn = tk.Button(parent, text=text, command=cmd,
+                    bg=color, fg=BG, font=FONT_BTN,
+                    activebackground=CARD2, activeforeground=TEXT,
+                    relief="flat", bd=0, cursor="hand2",
+                    padx=10, pady=6, width=width)
+    btn.bind("<Enter>", lambda e: btn.config(bg=TEXT if color==ACCENT else ACCENT))
+    btn.bind("<Leave>", lambda e: btn.config(bg=color))
+    return btn
+
+def ghost_btn(parent, text, cmd, width=18):
+    btn = tk.Button(parent, text=text, command=cmd,
+                    bg=CARD, fg=MUTED, font=FONT_BTN,
+                    activebackground=CARD2, activeforeground=TEXT,
+                    relief="flat", bd=0, cursor="hand2",
+                    padx=10, pady=6, width=width,
+                    highlightthickness=1, highlightbackground=BORDER,
+                    highlightcolor=ACCENT)
+    btn.bind("<Enter>", lambda e: btn.config(fg=TEXT, highlightbackground=ACCENT))
+    btn.bind("<Leave>", lambda e: btn.config(fg=MUTED, highlightbackground=BORDER))
+    return btn
+
+def section_sep(parent, bg=CARD):
+    tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=16, pady=8)
+
+def make_table(parent, columns, bg=CARD):
+    style = ttk.Style()
+    style.theme_use("clam")
+    style.configure("Hospital.Treeview",
+                    background=CARD2, foreground=TEXT,
+                    fieldbackground=CARD2, font=FONT_SMALL,
+                    rowheight=28, borderwidth=0)
+    style.configure("Hospital.Treeview.Heading",
+                    background=CARD, foreground=ACCENT,
+                    font=FONT_LABEL, borderwidth=0, relief="flat")
+    style.map("Hospital.Treeview",
+              background=[("selected", ACCENT)],
+              foreground=[("selected", BG)])
+    style.map("Hospital.Treeview.Heading", relief=[("active","flat")])
+
+    frame = tk.Frame(parent, bg=bg)
+    tree  = ttk.Treeview(frame, columns=columns, show="headings",
+                         style="Hospital.Treeview")
+    vsb = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+    tree.configure(yscrollcommand=vsb.set)
+    vsb.pack(side="right", fill="y")
+    tree.pack(fill="both", expand=True)
+    return frame, tree
+
+# ─────────────────────────────────────────────
+#  FORM DIALOG
+# ─────────────────────────────────────────────
+class FormDialog(tk.Toplevel):
+    def __init__(self, master, title, fields, on_submit, prefill=None):
+        super().__init__(master)
+        self.title(title)
+        self.configure(bg=BG)
+        self.resizable(False, False)
+        self.grab_set()
+
+        # center
+        self.update_idletasks()
+        w, h = 460, 80 + len(fields)*52 + 60
+        x = master.winfo_rootx() + (master.winfo_width()-w)//2
+        y = master.winfo_rooty() + (master.winfo_height()-h)//2
+        self.geometry(f"{w}x{h}+{x}+{y}")
+
+        card = make_card(self)
+        card.pack(fill="both", expand=True, padx=16, pady=16)
+
+        styled_label(card, title, fg=ACCENT, font=FONT_HEAD, bg=CARD).pack(pady=(14,4))
+        tk.Frame(card, bg=ACCENT, height=2).pack(fill="x", padx=16)
+
+        body = tk.Frame(card, bg=CARD)
+        body.pack(fill="both", expand=True, padx=24, pady=10)
+
+        self.entries = {}
+        for label, key, *opts in fields:
+            row = tk.Frame(body, bg=CARD)
+            row.pack(fill="x", pady=4)
+            styled_label(row, label, fg=MUTED, font=FONT_SMALL, bg=CARD).pack(anchor="w")
+            if opts and opts[0] == "combo":
+                var = tk.StringVar()
+                cb  = ttk.Combobox(row, textvariable=var, values=opts[1],
+                                   font=FONT_BODY, width=38, state="readonly")
+                cb.configure()
+                cb.pack(fill="x")
+                self.entries[key] = var
+                if prefill and key in prefill:
+                    var.set(prefill[key])
+            else:
+                e = styled_entry(row, width=44)
+                e.pack(fill="x")
+                self.entries[key] = e
+                if prefill and key in prefill:
+                    e.insert(0, str(prefill[key]))
+
+        btn_row = tk.Frame(card, bg=CARD)
+        btn_row.pack(pady=(4, 14))
+        accent_btn(btn_row, "✓  Submit", lambda: self._submit(fields, on_submit), width=14).pack(side="left", padx=6)
+        ghost_btn(btn_row, "✕  Cancel", self.destroy, width=14).pack(side="left", padx=6)
+
+    def _submit(self, fields, on_submit):
+        data = {}
+        for label, key, *_ in fields:
+            val = self.entries[key]
+            data[key] = val.get().strip() if isinstance(val, (tk.StringVar, tk.Entry)) else val.get()
+        on_submit(data)
+        self.destroy()
+
+# ─────────────────────────────────────────────
+#  SIDEBAR NAV
+# ─────────────────────────────────────────────
+NAV_ITEMS = [
+    ("🏠", "Dashboard"),
+    ("👤", "Patients"),
+    ("📅", "Appointments"),
+    ("💳", "Billing"),
+]
+
+class Sidebar(tk.Frame):
+    def __init__(self, master, on_select):
+        super().__init__(master, bg=CARD, width=200)
+        self.pack_propagate(False)
+        self.on_select = on_select
+        self.btns = {}
+        self._active = None
+
+        tk.Frame(self, bg=ACCENT, height=3).pack(fill="x")
+
+        logo = tk.Frame(self, bg=CARD)
+        logo.pack(fill="x", pady=20, padx=16)
+        tk.Label(logo, text="✚", fg=ACCENT, bg=CARD, font=("Georgia",28)).pack()
+        tk.Label(logo, text="MedSys", fg=TEXT, bg=CARD, font=("Georgia",15,"bold")).pack()
+        tk.Label(logo, text="Hospital Manager", fg=MUTED, bg=CARD, font=FONT_SMALL).pack()
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=16, pady=4)
+
+        for icon, name in NAV_ITEMS:
+            btn = tk.Button(self, text=f"  {icon}  {name}",
+                            font=FONT_BTN, fg=MUTED, bg=CARD,
+                            activebackground=CARD2, activeforeground=TEXT,
+                            relief="flat", bd=0, anchor="w",
+                            padx=12, pady=10, cursor="hand2",
+                            command=lambda n=name: self.select(n))
+            btn.pack(fill="x", padx=8, pady=2)
+            self.btns[name] = btn
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=16, pady=4)
+
+        # version
+        tk.Label(self, text="v1.0  Alliance Univ", fg=BORDER,
+                 bg=CARD, font=FONT_SMALL).pack(side="bottom", pady=12)
+
+    def select(self, name):
+        if self._active:
+            self.btns[self._active].config(fg=MUTED, bg=CARD)
+        self._active = name
+        self.btns[name].config(fg=BG, bg=ACCENT)
+        self.on_select(name)
+
+# ─────────────────────────────────────────────
+#  PAGES
+# ─────────────────────────────────────────────
+class BasePage(tk.Frame):
+    def __init__(self, master):
+        super().__init__(master, bg=BG)
+
+    def refresh(self): pass
+
+# ── DASHBOARD ──────────────────────────────
+class DashboardPage(BasePage):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        # header
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=30, pady=(28,0))
+        tk.Label(hdr, text="Dashboard", fg=TEXT, bg=BG, font=FONT_TITLE).pack(side="left")
+        self.date_lbl = tk.Label(hdr, text="", fg=MUTED, bg=BG, font=FONT_SMALL)
+        self.date_lbl.pack(side="right", pady=10)
+        self._tick()
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=30, pady=12)
+
+        # stat cards
+        self.stats_frame = tk.Frame(self, bg=BG)
+        self.stats_frame.pack(fill="x", padx=30, pady=4)
+
+        # recent activity
+        act_lbl = tk.Frame(self, bg=BG)
+        act_lbl.pack(fill="x", padx=30, pady=(18,4))
+        tk.Label(act_lbl, text="Recent Patients", fg=MUTED, bg=BG, font=FONT_LABEL).pack(side="left")
+
+        table_frame, self.tree = make_table(self, ("ID","Name","Age","Disease","Doctor","Registered"))
+        table_frame.pack(fill="both", expand=True, padx=30, pady=(0,20))
+
+        cols = [("ID",70),("Name",160),("Age",50),("Disease",160),("Doctor",160),("Registered",140)]
+        for col, w in cols:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=w, anchor="center" if col in ("ID","Age") else "w")
+
+    def _tick(self):
+        self.date_lbl.config(text=datetime.now().strftime("%A, %d %B %Y  |  %H:%M:%S"))
+        self.after(1000, self._tick)
+
+    def _stat_card(self, parent, label, value, color):
+        c = tk.Frame(parent, bg=CARD, padx=20, pady=16)
+        c.pack(side="left", expand=True, fill="both", padx=6)
+        tk.Frame(c, bg=color, height=3).pack(fill="x", pady=(0,10))
+        tk.Label(c, text=str(value), fg=color, bg=CARD, font=("Georgia",28,"bold")).pack()
+        tk.Label(c, text=label, fg=MUTED, bg=CARD, font=FONT_SMALL).pack()
+
+    def refresh(self):
+        p = self.app.patients
+        a = self.app.appointments
+        b = self.app.billing
+
+        for w in self.stats_frame.winfo_children():
+            w.destroy()
+
+        revenue  = sum(v["total"] for v in b.values() if v.get("paid"))
+        self._stat_card(self.stats_frame, "Total Patients",     len(p),    ACCENT)
+        self._stat_card(self.stats_frame, "Appointments",       len(a),    ACCENT2)
+        self._stat_card(self.stats_frame, "Bills Generated",    len(b),    WARNING)
+        self._stat_card(self.stats_frame, f"Revenue (₹)",       f"{revenue:,.0f}", SUCCESS)
+
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for pid, info in list(p.items())[-10:]:
+            self.tree.insert("", 0, values=(pid, info["name"], info["age"],
+                                             info["disease"], info["doctor"],
+                                             info.get("registered_on","")))
+
+# ── PATIENTS ───────────────────────────────
+PATIENT_FIELDS = [
+    ("Full Name",        "name"),
+    ("Age",              "age"),
+    ("Gender",           "gender", "combo", ["Male","Female","Other"]),
+    ("Contact Number",   "contact"),
+    ("Disease / Complaint","disease"),
+    ("Doctor Name",      "doctor"),
+]
+
+class PatientsPage(BasePage):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=30, pady=(28,0))
+        tk.Label(hdr, text="Patients", fg=TEXT, bg=BG, font=FONT_TITLE).pack(side="left")
+        accent_btn(hdr, "+ Register Patient", self._add, width=20).pack(side="right", pady=8)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=30, pady=10)
+
+        # search
+        sf = tk.Frame(self, bg=BG)
+        sf.pack(fill="x", padx=30, pady=(0,10))
+        tk.Label(sf, text="🔍", fg=MUTED, bg=BG, font=FONT_BODY).pack(side="left")
+        self.search_var = tk.StringVar()
+        self.search_var.trace("w", lambda *_: self.refresh())
+        se = tk.Entry(sf, textvariable=self.search_var, width=36,
+                      bg=CARD, fg=TEXT, insertbackground=ACCENT,
+                      relief="flat", font=FONT_BODY, bd=0,
+                      highlightthickness=1, highlightbackground=BORDER, highlightcolor=ACCENT)
+        se.pack(side="left", padx=8, ipady=5)
+
+        frame, self.tree = make_table(self, ("ID","Name","Age","Gender","Contact","Disease","Doctor"))
+        frame.pack(fill="both", expand=True, padx=30)
+
+        cols = [("ID",60),("Name",150),("Age",45),("Gender",70),
+                ("Contact",110),("Disease",150),("Doctor",150)]
+        for col, w in cols:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=w)
+
+        # action buttons
+        bf = tk.Frame(self, bg=BG)
+        bf.pack(fill="x", padx=30, pady=10)
+        ghost_btn(bf, "✏  Edit",   self._edit,   width=14).pack(side="left", padx=4)
+        ghost_btn(bf, "🗑  Delete", self._delete, width=14).pack(side="left", padx=4)
+
+    def _selected_pid(self):
+        sel = self.tree.selection()
+        return self.tree.item(sel[0])["values"][0] if sel else None
+
+    def _add(self):
+        FormDialog(self.master, "Register Patient", PATIENT_FIELDS, self._do_add)
+
+    def _do_add(self, data):
+        if not data.get("name"):
+            messagebox.showerror("Error","Name is required.")
+            return
+        try: int(data["age"])
+        except: messagebox.showerror("Error","Age must be a number."); return
+        pid = next_pid(self.app.patients)
+        self.app.patients[pid] = {**data, "age": int(data["age"]),
+                                   "registered_on": datetime.now().strftime("%Y-%m-%d %H:%M")}
+        save_data(PATIENTS_FILE, self.app.patients)
+        self.app.refresh_all()
+        messagebox.showinfo("Success", f"Patient registered as {pid}")
+
+    def _edit(self):
+        pid = self._selected_pid()
+        if not pid: messagebox.showwarning("Select","Please select a patient."); return
+        info = self.app.patients[pid]
+        FormDialog(self.master, f"Edit Patient — {pid}", PATIENT_FIELDS,
+                   lambda d: self._do_edit(pid, d), prefill=info)
+
+    def _do_edit(self, pid, data):
+        self.app.patients[pid].update(data)
+        save_data(PATIENTS_FILE, self.app.patients)
+        self.app.refresh_all()
+
+    def _delete(self):
+        pid = self._selected_pid()
+        if not pid: messagebox.showwarning("Select","Please select a patient."); return
+        name = self.app.patients[pid]["name"]
+        if messagebox.askyesno("Confirm", f"Delete patient {name} ({pid}) and all related records?"):
+            self.app.patients.pop(pid, None)
+            self.app.appointments.pop(pid, None)
+            self.app.billing.pop(pid, None)
+            save_data(PATIENTS_FILE, self.app.patients)
+            save_data(APPOINTMENTS_FILE, self.app.appointments)
+            save_data(BILLING_FILE, self.app.billing)
+            self.app.refresh_all()
+
+    def refresh(self):
+        kw = self.search_var.get().lower()
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for pid, p in self.app.patients.items():
+            if kw and kw not in pid.lower() and kw not in p["name"].lower():
+                continue
+            self.tree.insert("", "end", values=(pid, p["name"], p["age"],
+                                                 p.get("gender",""), p.get("contact",""),
+                                                 p.get("disease",""), p.get("doctor","")))
+
+# ── APPOINTMENTS ───────────────────────────
+class AppointmentsPage(BasePage):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=30, pady=(28,0))
+        tk.Label(hdr, text="Appointments", fg=TEXT, bg=BG, font=FONT_TITLE).pack(side="left")
+        accent_btn(hdr, "+ Book Appointment", self._book, width=22).pack(side="right", pady=8)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=30, pady=10)
+
+        frame, self.tree = make_table(self, ("PID","Patient","Doctor","Date","Time","Status"))
+        frame.pack(fill="both", expand=True, padx=30)
+
+        cols = [("PID",60),("Patient",160),("Doctor",160),("Date",110),("Time",80),("Status",110)]
+        for col, w in cols:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=w)
+
+        bf = tk.Frame(self, bg=BG)
+        bf.pack(fill="x", padx=30, pady=10)
+        ghost_btn(bf, "✕  Cancel Appt", self._cancel, width=18).pack(side="left", padx=4)
+
+    def _book(self):
+        if not self.app.patients:
+            messagebox.showwarning("No Patients","Register a patient first.")
+            return
+        pid_list = list(self.app.patients.keys())
+        fields = [
+            ("Patient ID", "pid", "combo", pid_list),
+            ("Date (YYYY-MM-DD)", "date"),
+            ("Time (HH:MM)",      "time"),
+        ]
+        FormDialog(self.master, "Book Appointment", fields, self._do_book)
+
+    def _do_book(self, data):
+        pid  = data.get("pid","").strip()
+        date = data.get("date","").strip()
+        time = data.get("time","").strip()
+        if pid not in self.app.patients:
+            messagebox.showerror("Error","Patient not found."); return
+        slot   = f"{date} {time}"
+        doctor = self.app.patients[pid]["doctor"]
+        for ep, ea in self.app.appointments.items():
+            if ea.get("slot") == slot and ea.get("doctor") == doctor:
+                messagebox.showerror("Conflict", f"Dr. {doctor} is already booked at {slot}.")
+                return
+        self.app.appointments[pid] = {
+            "patient_name": self.app.patients[pid]["name"],
+            "doctor": doctor, "slot": slot, "status": "Scheduled"
+        }
+        save_data(APPOINTMENTS_FILE, self.app.appointments)
+        self.app.refresh_all()
+        messagebox.showinfo("Booked", f"Appointment scheduled for {self.app.patients[pid]['name']}.")
+
+    def _cancel(self):
+        sel = self.tree.selection()
+        if not sel: messagebox.showwarning("Select","Select an appointment."); return
+        pid = self.tree.item(sel[0])["values"][0]
+        if pid in self.app.appointments:
+            self.app.appointments[pid]["status"] = "Cancelled"
+            save_data(APPOINTMENTS_FILE, self.app.appointments)
+            self.app.refresh_all()
+
+    def refresh(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for pid, a in self.app.appointments.items():
+            slot_parts = a.get("slot","").split(" ")
+            date = slot_parts[0] if len(slot_parts)>0 else ""
+            time = slot_parts[1] if len(slot_parts)>1 else ""
+            tag  = "cancelled" if a["status"]=="Cancelled" else ""
+            iid  = self.tree.insert("", "end", values=(pid, a["patient_name"],
+                                                         a["doctor"], date, time, a["status"]), tags=(tag,))
+        self.tree.tag_configure("cancelled", foreground=DANGER)
+
+# ── BILLING ────────────────────────────────
+class BillingPage(BasePage):
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self._build()
+
+    def _build(self):
+        hdr = tk.Frame(self, bg=BG)
+        hdr.pack(fill="x", padx=30, pady=(28,0))
+        tk.Label(hdr, text="Billing", fg=TEXT, bg=BG, font=FONT_TITLE).pack(side="left")
+        accent_btn(hdr, "+ Generate Bill", self._gen, width=20).pack(side="right", pady=8)
+
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x", padx=30, pady=10)
+
+        frame, self.tree = make_table(self, ("PID","Patient","Doctor","Consult","Medicine","Tests","Total","Status"))
+        frame.pack(fill="both", expand=True, padx=30)
+
+        cols = [("PID",55),("Patient",140),("Doctor",130),("Consult",80),
+                ("Medicine",80),("Tests",70),("Total",90),("Status",80)]
+        for col, w in cols:
+            self.tree.heading(col, text=col)
+            self.tree.column(col, width=w, anchor="e" if col in ("Consult","Medicine","Tests","Total") else "w")
+
+        bf = tk.Frame(self, bg=BG)
+        bf.pack(fill="x", padx=30, pady=10)
+        accent_btn(bf, "✓  Mark Paid", self._mark_paid, color=SUCCESS, width=16).pack(side="left", padx=4)
+        ghost_btn(bf,  "🖨  Print Bill", self._print,  width=16).pack(side="left", padx=4)
+
+    def _gen(self):
+        if not self.app.patients:
+            messagebox.showwarning("No Patients","Register a patient first.")
+            return
+        pid_list = list(self.app.patients.keys())
+        fields = [
+            ("Patient ID",      "pid",      "combo", pid_list),
+            ("Medicine Cost ₹", "medicine"),
+            ("Lab / Test Cost ₹","tests"),
+        ]
+        FormDialog(self.master, "Generate Bill", fields, self._do_gen)
+
+    def _do_gen(self, data):
+        pid = data.get("pid","").strip()
+        if pid not in self.app.patients:
+            messagebox.showerror("Error","Patient not found."); return
+        try:
+            med   = float(data["medicine"])
+            tests = float(data["tests"])
+        except:
+            messagebox.showerror("Error","Enter valid numeric costs."); return
+        total = 500 + med + tests
+        self.app.billing[pid] = {
+            "patient_name": self.app.patients[pid]["name"],
+            "doctor": self.app.patients[pid]["doctor"],
+            "consultation_fee": 500,
+            "medicine_cost": med, "test_cost": tests,
+            "total": total,
+            "generated_on": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "paid": False
+        }
+        save_data(BILLING_FILE, self.app.billing)
+        self.app.refresh_all()
+        messagebox.showinfo("Bill Created", f"Total: ₹{total:.2f}")
+
+    def _selected(self):
+        sel = self.tree.selection()
+        return self.tree.item(sel[0])["values"][0] if sel else None
+
+    def _mark_paid(self):
+        pid = self._selected()
+        if not pid: messagebox.showwarning("Select","Select a bill."); return
+        if pid in self.app.billing:
+            self.app.billing[pid]["paid"] = True
+            save_data(BILLING_FILE, self.app.billing)
+            self.app.refresh_all()
+
+    def _print(self):
+        pid = self._selected()
+        if not pid or pid not in self.app.billing:
+            messagebox.showwarning("Select","Select a bill."); return
+        b = self.app.billing[pid]
+        msg = (
+            f"{'='*38}\n"
+            f"      ALLIANCE HOSPITAL BILL\n"
+            f"{'='*38}\n"
+            f"  Patient ID   : {pid}\n"
+            f"  Patient Name : {b['patient_name']}\n"
+            f"  Doctor       : {b['doctor']}\n"
+            f"  Date         : {b['generated_on']}\n"
+            f"{'-'*38}\n"
+            f"  Consultation : ₹{b['consultation_fee']:>8.2f}\n"
+            f"  Medicines    : ₹{b['medicine_cost']:>8.2f}\n"
+            f"  Lab / Tests  : ₹{b['test_cost']:>8.2f}\n"
+            f"{'-'*38}\n"
+            f"  TOTAL        : ₹{b['total']:>8.2f}\n"
+            f"  Status       : {'PAID ✓' if b['paid'] else 'UNPAID'}\n"
+            f"{'='*38}"
+        )
+        win = tk.Toplevel(self.master)
+        win.title("Bill")
+        win.configure(bg=BG)
+        win.resizable(False, False)
+        win.geometry("340x320")
+        tk.Label(win, text=msg, font=("Courier",10), bg=CARD, fg=TEXT,
+                 justify="left", padx=16, pady=14).pack(padx=16, pady=16, fill="both")
+        accent_btn(win, "Close", win.destroy, width=12).pack(pady=(0,12))
+
+    def refresh(self):
+        for row in self.tree.get_children():
+            self.tree.delete(row)
+        for pid, b in self.app.billing.items():
+            tag  = "paid" if b["paid"] else ""
+            self.tree.insert("", "end", values=(
+                pid, b["patient_name"], b["doctor"],
+                f"₹{b['consultation_fee']:.0f}",
+                f"₹{b['medicine_cost']:.0f}",
+                f"₹{b['test_cost']:.0f}",
+                f"₹{b['total']:.2f}",
+                "PAID ✓" if b["paid"] else "UNPAID"
+            ), tags=(tag,))
+        self.tree.tag_configure("paid", foreground=SUCCESS)
+
+# ─────────────────────────────────────────────
+#  MAIN APP
+# ─────────────────────────────────────────────
+class HospitalApp(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("MedSys — Hospital Management System")
+        self.geometry("1100x680")
+        self.minsize(900, 600)
+        self.configure(bg=BG)
+
+        self.patients     = load_data(PATIENTS_FILE)
+        self.appointments = load_data(APPOINTMENTS_FILE)
+        self.billing      = load_data(BILLING_FILE)
+
+        # layout
+        self.sidebar = Sidebar(self, self._switch)
+        self.sidebar.pack(side="left", fill="y")
+
+        tk.Frame(self, bg=BORDER, width=1).pack(side="left", fill="y")
+
+        self.content = tk.Frame(self, bg=BG)
+        self.content.pack(side="left", fill="both", expand=True)
+
+        self.pages = {
+            "Dashboard"    : DashboardPage(self.content, self),
+            "Patients"     : PatientsPage(self.content, self),
+            "Appointments" : AppointmentsPage(self.content, self),
+            "Billing"      : BillingPage(self.content, self),
+        }
+
+        self._current = None
+        self.sidebar.select("Dashboard")
+
+    def _switch(self, name):
+        if self._current:
+            self.pages[self._current].pack_forget()
+        self._current = name
+        self.pages[name].pack(fill="both", expand=True)
+        self.pages[name].refresh()
+
+    def refresh_all(self):
+        for page in self.pages.values():
+            page.refresh()
+
+if __name__ == "__main__":
+    app = HospitalApp()
+    app.mainloop()
